@@ -5,6 +5,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# ===== 测试项目 =====
+test/
+
 # ===== 日志 =====
 *.log
 npm-debug.log*
@@ -17,6 +20,9 @@ pnpm-debug.log*
 
 # ===== 本地 Claude Code 配置（不进版本库，避免泄露本机偏好/密钥）=====
 .claude/settings.local.json
+
+# ===== wayfinder 地图（本地规划产物，不进版本库）=====
+wayfinding/
 
 # ===== 系统 / 编辑器 =====
 .DS_Store

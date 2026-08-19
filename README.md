@@ -13,7 +13,7 @@ pnpm paopao models  # 列出可用模型（Ollama /v1/models）
 ```
 
 ```text
-paopao · qwen3:8b @ http://localhost:11434/v1
+paopao · qwen3:14b @ http://localhost:11434/v1
 输入 /help 查看命令。回答中 Ctrl+C 中断；提示符处 Ctrl+C 退出。
 ❯ 你好
 paopao › 思考中 🤔        ← 模型冷加载/思考中（不用再敲回车）
@@ -32,12 +32,15 @@ paopao models               → 列出可用模型（非 Ollama 显示静态提�
 paopao --help               → 帮助（commander 自动）
 ```
 
-配置优先级：**默认值 < 环境变量 < CLI 参数**，五样都可配：
+配置优先级：**默认值 < `.env` / 环境变量 < CLI 参数**，五样都可配。
+
+> `.env`：项目根目录放 `.env` 即可（`PAOPAO_BASE_URL=…` 一行一个），零依赖自动加载；
+> 真实 shell 环境变量优先于 `.env`。`.env` 已被 .gitignore 忽略，放心放 key。
 
 | 项 | 环境变量 | CLI 参数 | 默认值 |
 |---|---|---|---|
 | 服务地址 | `PAOPAO_BASE_URL` | `--base-url` | `http://localhost:11434/v1` |
-| 模型 | `PAOPAO_MODEL` | `--model` | `qwen3:8b` |
+| 模型 | `PAOPAO_MODEL` | `--model` | `qwen3:14b` |
 | API key | `PAOPAO_API_KEY` | `--api-key` | 空（Ollama 免 key） |
 | 超时(秒) | `PAOPAO_TIMEOUT` | `--timeout` | 120 |
 | 温度 | `PAOPAO_TEMPERATURE` | `--temperature` | 0.7 |
@@ -56,7 +59,7 @@ pnpm paopao "你好"
 模型不是装在本项目里的，而是由 **Ollama** 这个程序跑成一个常驻的本地 HTTP 服务：
 
 - 启动服务：`ollama serve`（或安装 Ollama 桌面应用后常驻）
-- 模型（本机已装 `qwen3:8b`）由 Ollama 进程加载到内存里负责计算
+- 模型（本机已装 `qwen3:14b`）由 Ollama 进程加载到内存里负责计算
 - 常用命令：`ollama list` 看本机有哪些模型 · `ollama pull <名字>` 下载新模型
 
 ## 怎么连到本项目
@@ -66,7 +69,7 @@ pnpm paopao "你好"
 
 ```
 POST http://localhost:11434/v1/chat/completions
-body: { model: "qwen3:8b", messages: [...], stream: true }
+body: { model: "qwen3:14b", messages: [...], stream: true }
 ```
 
 模型边算边用 SSE 流式回文字，客户端把两家响应归一成统一事件

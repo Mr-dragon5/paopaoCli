@@ -4,8 +4,15 @@
 
 ## 结构
 
-- `map.md` — 地图（label: `wayfinder:map`）。索引，低分辨率总览。
-- `tickets/<id>-<slug>.md` — ticket，每张是地图的子 issue。
+一个 effort 一张地图。已存在的地图：
+
+- `map.md` — **已完成**：paopao 简易聊天 CLI（Ollama + DeepSeek 兼容）
+- `map-react.md` — **进行中**：paopao ReAct 工具调用循环
+
+每张地图配套自己的 tickets 目录：
+
+- 地图 `map-<name>.md` 的 tickets 放 `tickets-<name>/<id>-<slug>.md`（沿用 `map.md` 约定时即 `tickets/`）
+- 本仓库两个 effort：`tickets/`（旧，已完成）与 `tickets-react/`（新，进行中）
 
 ## Ticket frontmatter
 
@@ -30,4 +37,4 @@
 
 ## 备注
 
-本仓库非 git 仓库，research 成果直接写入 ticket 的 `## Resolution` 段（无分支）。
+本仓库用 git，但本地 tracker 不依赖分支：research 成果直接写入 ticket 的 `## Resolution` 段（无分支）。

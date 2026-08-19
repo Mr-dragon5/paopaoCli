@@ -1,12 +1,45 @@
 // ============================================================================
-// 配置加载 —— 优先级：默认值 < 环境变量 < CLI 参数
+// 配置加载 —— 优先级：默认值 < .env / 环境变量 < CLI 参数
 // ============================================================================
 // 依据：ticket 005。覆盖面：base-url / model / api-key / timeout / temperature，
-// env 与 flag 双通道，开箱即用（默认连本地 Ollama qwen3:8b）。
+// env 与 flag 双通道，开箱即用（默认连本地 Ollama qwen3:14b）。
+//
+// .env：零依赖加载 cwd/.env（无 dotenv）。真实 shell 环境变量 > .env > 默认值；
+// CLI 参数仍然压过 env。
 //
 // 环境变量：PAOPAO_BASE_URL / PAOPAO_MODEL / PAOPAO_API_KEY / PAOPAO_TIMEOUT(秒) / PAOPAO_TEMPERATURE
 // CLI 参数：--base-url / --model / --api-key / --timeout / --temperature
 // ============================================================================
+import { readFileSync } from 'node:fs'
+import * as path from 'node:path'
+
+// 极简 .env 加载：读 cwd/.env，KEY=VALUE 填进 process.env。
+// 只在未设置时填（真实环境变量优先），支持 # 注释与成对引号。
+export function loadDotEnv(): void {
+  let text: string
+  try {
+    text = readFileSync(path.join(process.cwd(), '.env'), 'utf8')
+  } catch {
+    return // 没有 .env 就算了
+  }
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq === -1) continue
+    const key = line.slice(0, eq).trim()
+    let value = line.slice(eq + 1).trim()
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1)
+    }
+    if (key && process.env[key] === undefined) process.env[key] = value
+  }
+}
+
+loadDotEnv()
 
 // commander 解析出来的 flag 值（秒/温度是数字）
 export interface ConfigOptions {
@@ -27,7 +60,7 @@ export interface Config {
 
 const DEFAULTS = {
   baseUrl: 'http://localhost:11434/v1',
-  model: 'qwen3:8b',
+  model: 'qwen3:14b',
   timeoutSec: 120,
   temperature: 0.7,
 }

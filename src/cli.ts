@@ -22,7 +22,7 @@ const toFloat = (v: string) => parseFloat(v)
 function addConfigOptions(cmd: Command): void {
   cmd
     .option('--base-url <url>', '模型服务地址（默认 http://localhost:11434/v1）')
-    .option('--model <name>', '模型名（默认 qwen3:8b）')
+    .option('--model <name>', '模型名（默认 qwen3:14b）')
     .option('--api-key <key>', 'API key（Ollama 可省；DeepSeek 等云端必填）')
     .option('--timeout <sec>', '请求超时秒数（默认 120）', toInt)
     .option('--temperature <n>', '采样温度 0-2（默认 0.7）', toFloat)

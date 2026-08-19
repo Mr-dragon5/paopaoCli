@@ -8,8 +8,38 @@
 
 // 一条对话消息
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  // role==='tool' 时必需：指向生成这条结果的 assistant tool_calls 里的 id（DeepSeek 必填、Ollama 可选，统一带上对两家都安全）
+  toolCallId?: string
+  // role==='assistant' 且发起工具调用时携带：回传历史时原样带回去
+  toolCalls?: ChatToolCall[]
+}
+
+// 模型发起的一次工具调用（001：arguments 是完整 JSON 字符串，需容错解析）
+export interface ChatToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
+// 暴露给模型的工具 schema（OpenAI 兼容 `tools` 参数的元素）
+export interface ChatTool {
+  type: 'function'
+  function: {
+    name: string
+    description?: string
+    parameters: Record<string, unknown> // JSON Schema
+  }
+}
+
+// 非流式工具判定回合（complete）的返回
+export interface CompleteResult {
+  content: string // 正式回答（模型决定不再调工具时的最终答案）
+  toolCalls: ChatToolCall[] | null // 模型要调的工具；null = 本轮不调
+  finishReason?: string
+  reasoning?: string // 思考过程（Ollama reasoning / DeepSeek reasoning_content），供屏幕灰显
+  usage?: { inputTokens: number; outputTokens: number }
 }
 
 // 错误类别：kind 决定提示语，message 对用户友好
