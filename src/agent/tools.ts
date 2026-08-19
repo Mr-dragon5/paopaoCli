@@ -14,7 +14,9 @@ import { spawn } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import type { Stats } from 'node:fs'
 import * as path from 'node:path'
-import type { ChatTool } from '../llm/types.js'
+import { z } from 'zod'
+import { ToolRegistry } from './registry.js'
+import { ToolExecutor } from './executor.js'
 
 export const RUN_TIMEOUT_MS = 15_000 // 003：超时 15s
 export const OUTPUT_LIMIT = 4_000 // 003：输出截断 4KB
@@ -22,122 +24,15 @@ const READ_FILE_LIMIT = 64 * 1024 // 003：read_file 上限 64KB
 // 写文件和改文件共用上限，防止模型一次生成超大的源码或日志文件。
 const WRITE_FILE_LIMIT = 256 * 1024
 
-// 工具 schema：文件和 Python 工具让 Agent 能完成“创建→运行→修复”的开发闭环。
-export const TOOLS: ChatTool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'get_time',
-      description: '获取当前时间',
-      parameters: {
-        type: 'object',
-        properties: {
-          format: { type: 'string', enum: ['iso', 'human'] },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_command',
-      description: '在本地执行一条 shell 命令并返回其输出',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: '要执行的命令' },
-        },
-        required: ['command'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: '读取文件内容（相对当前工作目录解析）',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: '在当前工作目录内创建或写入一个 UTF-8 文本文件；父目录必须先存在',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          content: { type: 'string' },
-        },
-        required: ['path', 'content'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'edit_file',
-      description: '在当前工作目录内用精确文本替换修改 UTF-8 文本文件',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          oldText: { type: 'string' },
-          newText: { type: 'string' },
-        },
-        required: ['path', 'oldText', 'newText'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_directory',
-      description: '列出当前工作目录内的文件和子目录',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          recursive: { type: 'boolean' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'make_directory',
-      description: '在当前工作目录内创建目录',
-      parameters: {
-        type: 'object',
-        properties: { path: { type: 'string' } },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_python',
-      description: '运行当前工作目录内的 Python 文件并返回输出',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          args: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['path'],
-      },
-    },
-  },
-]
+// 每个工具的输入 Schema：既用于校验模型参数，也用于自动生成 OpenAI 工具定义。
+const getTimeSchema = z.object({ format: z.enum(['iso', 'human']).optional() })
+const runCommandSchema = z.object({ command: z.string() })
+const readFileSchema = z.object({ path: z.string() })
+const writeFileSchema = z.object({ path: z.string(), content: z.string() })
+const editFileSchema = z.object({ path: z.string(), oldText: z.string(), newText: z.string() })
+const listDirectorySchema = z.object({ path: z.string().optional(), recursive: z.boolean().optional() })
+const makeDirectorySchema = z.object({ path: z.string() })
+const runPythonSchema = z.object({ path: z.string(), args: z.array(z.string()).optional() })
 
 // 003：危险命令启发式清单——命中任一条，执行前要 y/n 确认
 const DANGEROUS_PATTERNS: RegExp[] = [
@@ -232,44 +127,7 @@ export async function executeTool(
   args: Record<string, unknown>,
   confirm: (desc: string) => Promise<boolean>,
 ): Promise<string> {
-  switch (name) {
-    case 'get_time':
-      return getTime(args.format === 'human' ? 'human' : 'iso')
-    case 'run_command': {
-      const command = String(args.command ?? '').trim()
-      if (!command) return '(run_command: 命令为空)'
-      if (isDangerous(command)) {
-        const ok = await confirm(`检测到危险命令，确认执行？\n  ${command}`)
-        if (!ok) return `(已取消，危险命令未执行：${command})`
-      }
-      return runCommand(runtime, command)
-    }
-    case 'read_file':
-      return readFile(runtime, String(args.path ?? ''))
-    // 文件写入/修改与 Python 执行都走专用实现，避免依赖 shell 重定向造成跨平台问题。
-    case 'write_file':
-      return writeFile(runtime, String(args.path ?? ''), String(args.content ?? ''), confirm)
-    case 'edit_file':
-      return editFile(
-        runtime,
-        String(args.path ?? ''),
-        String(args.oldText ?? ''),
-        String(args.newText ?? ''),
-        confirm,
-      )
-    case 'list_directory':
-      return listDirectory(runtime, String(args.path ?? '.'), args.recursive === true)
-    case 'make_directory':
-      return makeDirectory(runtime, String(args.path ?? ''))
-    case 'run_python': {
-      const p = String(args.path ?? '')
-      const pyArgs = Array.isArray(args.args) ? args.args.map(String) : []
-      const ok = await confirm(`即将运行 Python 文件：\n  ${p}${pyArgs.length ? ` ${pyArgs.join(' ')}` : ''}`)
-      return ok ? runPython(runtime, p, pyArgs) : `(已取消，Python 文件未执行：${p})`
-    }
-    default:
-      return `(未知工具：${name})`
-  }
+  return TOOL_EXECUTOR.execute(runtime, name, args, confirm)
 }
 
 function getTime(fmt: 'iso' | 'human'): string {
@@ -540,3 +398,112 @@ async function runPython(runtime: ToolRuntime, p: string, pyArgs: string[]): Pro
     })
   })
 }
+
+// 所有内置工具在模块末尾集中注册：函数声明已完成，注册表可直接引用各工具实现。
+// TOOLS 仅作为兼容导出，真正的定义来源是 TOOL_REGISTRY。
+export const TOOL_REGISTRY = new ToolRegistry()
+
+TOOL_REGISTRY.register({
+  name: 'get_time',
+  description: '获取当前时间',
+  inputSchema: getTimeSchema,
+  dangerLevel: 'safe',
+  isReadOnly: true,
+  isConcurrencySafe: true,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (_runtime, args) => getTime(args.format === 'human' ? 'human' : 'iso'),
+})
+
+TOOL_REGISTRY.register({
+  name: 'run_command',
+  description: '在本地执行一条 shell 命令并返回其输出',
+  inputSchema: runCommandSchema,
+  dangerLevel: 'high',
+  isReadOnly: false,
+  isConcurrencySafe: false,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args, confirm) => {
+    const command = String(args.command ?? '').trim()
+    if (!command) return '(run_command: 命令为空)'
+    if (isDangerous(command)) {
+      const ok = await confirm(`检测到危险命令，确认执行？\n  ${command}`)
+      if (!ok) return `(已取消，危险命令未执行：${command})`
+    }
+    return runCommand(runtime, command)
+  },
+})
+
+TOOL_REGISTRY.register({
+  name: 'read_file',
+  description: '读取文件内容（相对当前工作目录解析）',
+  inputSchema: readFileSchema,
+  dangerLevel: 'safe',
+  isReadOnly: true,
+  isConcurrencySafe: true,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args) => readFile(runtime, String(args.path ?? '')),
+})
+
+TOOL_REGISTRY.register({
+  name: 'write_file',
+  description: '在当前工作目录内创建或写入一个 UTF-8 文本文件；父目录必须先存在',
+  inputSchema: writeFileSchema,
+  dangerLevel: 'medium',
+  isReadOnly: false,
+  isConcurrencySafe: false,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args, confirm) => writeFile(runtime, String(args.path ?? ''), String(args.content ?? ''), confirm),
+})
+
+TOOL_REGISTRY.register({
+  name: 'edit_file',
+  description: '在当前工作目录内用精确文本替换修改 UTF-8 文本文件',
+  inputSchema: editFileSchema,
+  dangerLevel: 'medium',
+  isReadOnly: false,
+  isConcurrencySafe: false,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args, confirm) =>
+    editFile(runtime, String(args.path ?? ''), String(args.oldText ?? ''), String(args.newText ?? ''), confirm),
+})
+
+TOOL_REGISTRY.register({
+  name: 'list_directory',
+  description: '列出当前工作目录内的文件和子目录',
+  inputSchema: listDirectorySchema,
+  dangerLevel: 'safe',
+  isReadOnly: true,
+  isConcurrencySafe: true,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args) => listDirectory(runtime, String(args.path ?? '.'), args.recursive === true),
+})
+
+TOOL_REGISTRY.register({
+  name: 'make_directory',
+  description: '在当前工作目录内创建目录',
+  inputSchema: makeDirectorySchema,
+  dangerLevel: 'low',
+  isReadOnly: false,
+  isConcurrencySafe: false,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args) => makeDirectory(runtime, String(args.path ?? '')),
+})
+
+TOOL_REGISTRY.register({
+  name: 'run_python',
+  description: '运行当前工作目录内的 Python 文件并返回输出',
+  inputSchema: runPythonSchema,
+  dangerLevel: 'high',
+  isReadOnly: false,
+  isConcurrencySafe: false,
+  timeoutMs: RUN_TIMEOUT_MS,
+  execute: async (runtime, args, confirm) => {
+    const p = String(args.path ?? '')
+    const pyArgs = Array.isArray(args.args) ? args.args.map(String) : []
+    const ok = await confirm(`即将运行 Python 文件：\n  ${p}${pyArgs.length ? ` ${pyArgs.join(' ')}` : ''}`)
+    return ok ? runPython(runtime, p, pyArgs) : `(已取消，Python 文件未执行：${p})`
+  },
+})
+
+export const TOOL_EXECUTOR = new ToolExecutor(TOOL_REGISTRY)
+export const TOOLS = TOOL_REGISTRY.getDefinitions()

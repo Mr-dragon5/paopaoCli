@@ -16,7 +16,9 @@
 import { OpenAICompatibleClient } from '../llm/OpenAICompatibleClient.js'
 import { trimToBudget } from '../context.js'
 import type { ChatMessage } from '../llm/types.js'
-import { TOOLS, executeTool, type ToolRuntime } from './tools.js'
+import { TOOL_EXECUTOR, TOOL_REGISTRY, type ToolRuntime } from './tools.js'
+import type { ToolExecutionRequest } from './executor.js'
+import type { AgentEvent } from './events.js'
 
 // 单轮开发任务通常需要多次“写入→运行→修复”，8 轮过早截断；同时保留
 // 工具调用次数和总时长上限，避免模型真正失控时无限运行。
@@ -33,6 +35,8 @@ export interface AgentCallbacks {
   onToolCall(name: string, argsText: string): void
   onToolResult(result: string): void
   onFinalChunk(text: string): void // 最终回答的流式 chunk（无工具时一次给全文）
+  // 可选统一事件出口；保留上面的细粒度回调以兼容现有 REPL。
+  onEvent?(event: AgentEvent): void
 }
 
 export interface AgentTurnResult {
@@ -59,7 +63,9 @@ export async function runAgentTurn(
     const content = `本轮${reason}，已保留已经完成的文件修改。`
     callbacks.onFinalChunk(content)
     history.push({ role: 'assistant', content })
-    return { content, rounds, exceeded: true }
+    const result = { content, rounds, exceeded: true }
+    callbacks.onEvent?.({ type: 'turn_end', result })
+    return result
   }
 
   for (;;) {
@@ -72,15 +78,19 @@ export async function runAgentTurn(
     }
 
     const result = await client.complete(trimToBudget(history), {
-      tools: TOOLS,
+      tools: TOOL_REGISTRY.getDefinitions(),
       signal: opts.signal,
       temperature: opts.temperature,
     })
-    if (result.reasoning) callbacks.onThinking(result.reasoning)
+    if (result.reasoning) {
+      callbacks.onThinking(result.reasoning)
+      callbacks.onEvent?.({ type: 'thinking', text: result.reasoning })
+    }
 
     if (result.toolCalls?.length) {
       usedTools = true
       history.push({ role: 'assistant', content: '', toolCalls: result.toolCalls })
+      const pending: ToolExecutionRequest[] = []
       for (const tc of result.toolCalls) {
         // 工具调用数和总时长分别限制模型的调用规模与单轮耗时。
         if (toolCalls >= MAX_TOOL_CALLS) return stopAtLimit(`达到 ${MAX_TOOL_CALLS} 次工具调用上限`)
@@ -95,9 +105,20 @@ export async function runAgentTurn(
           // 001：arguments 不保证合法 JSON，容错
         }
         callbacks.onToolCall(tc.name, tc.arguments)
-        const out = await executeTool(runtime, tc.name, args, callbacks.confirm)
-        callbacks.onToolResult(out)
-        history.push({ role: 'tool', toolCallId: tc.id, content: out })
+        callbacks.onEvent?.({ type: 'tool_call', id: tc.id, name: tc.name, argsText: tc.arguments })
+        pending.push({ id: tc.id, name: tc.name, args })
+      }
+      // 只读调用由执行器并发处理，写入/命令调用仍按原顺序串行处理。
+      const executed = await TOOL_EXECUTOR.executeMany(runtime, pending, callbacks.confirm)
+      for (const toolResult of executed) {
+        callbacks.onToolResult(toolResult.content)
+        callbacks.onEvent?.({
+          type: 'tool_result',
+          id: toolResult.id,
+          name: toolResult.name,
+          content: toolResult.content,
+        })
+        history.push({ role: 'tool', toolCallId: toolResult.id, content: toolResult.content })
       }
       continue
     }
@@ -114,16 +135,22 @@ export async function runAgentTurn(
         if (ev.type === 'content') {
           content += ev.text
           callbacks.onFinalChunk(ev.text)
+          callbacks.onEvent?.({ type: 'final_chunk', text: ev.text })
         }
       }
       history.push({ role: 'assistant', content })
-      return { content, rounds, exceeded: false }
+      const turnResult = { content, rounds, exceeded: false }
+      callbacks.onEvent?.({ type: 'turn_end', result: turnResult })
+      return turnResult
     }
 
     // 纯问答：直接用非流式 content，避免重复生成
     const content = result.content
     callbacks.onFinalChunk(content)
+    callbacks.onEvent?.({ type: 'final_chunk', text: content })
     history.push({ role: 'assistant', content })
-    return { content, rounds, exceeded: false }
+    const turnResult = { content, rounds, exceeded: false }
+    callbacks.onEvent?.({ type: 'turn_end', result: turnResult })
+    return turnResult
   }
 }
