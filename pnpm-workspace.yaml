@@ -1,0 +1,4 @@
+# pnpm 11：设置都放这里（不再读 package.json 的 "pnpm" 字段）
+# allowBuilds：放行 esbuild 的 postinstall（tsup 依赖它）
+allowBuilds:
+  esbuild: true
